@@ -19,6 +19,23 @@ func SetupRoutes(router *gin.Engine, cfg *config.Config, logger *zap.Logger) {
 	// Create proxy handler
 	proxy := handlers.NewProxyHandler(cfg, logger)
 
+	// ============================================
+	// External Services (no authentication)
+	// Configure these in config.yaml under external_services
+	// ============================================
+
+	// Ollama LLM API routes
+	router.POST("/api/generate", proxy.ProxyToExternalServiceWithPath("ollama", "/api/generate"))
+	router.POST("/api/chat", proxy.ProxyToExternalServiceWithPath("ollama", "/api/chat"))
+	router.POST("/api/embeddings", proxy.ProxyToExternalServiceWithPath("ollama", "/api/embeddings"))
+
+	// Docker Registry V2 API
+	router.Any("/v2/*path", proxy.ProxyToExternalService("docker_registry"))
+
+	// ============================================
+	// API Routes
+	// ============================================
+
 	// API version 1 routes
 	v1 := router.Group("/api/v1")
 	{
@@ -33,9 +50,7 @@ func SetupRoutes(router *gin.Engine, cfg *config.Config, logger *zap.Logger) {
 		protected := v1.Group("")
 		protected.Use(middleware.AuthMiddleware(cfg))
 		{
-			// Example: proxy to a backend service
-			// protected.Any("/users/*path", proxy.ProxyToService("user_service"))
-			// protected.Any("/orders/*path", proxy.ProxyToService("order_service"))
+			// Example: proxy to a backend service (configure in config.yaml under services)
 			_ = proxy // proxy handler available for use
 		}
 
@@ -48,6 +63,10 @@ func SetupRoutes(router *gin.Engine, cfg *config.Config, logger *zap.Logger) {
 		}
 	}
 
-	// Catch-all for undefined routes
-	router.NoRoute(handlers.NotFound)
+	// ============================================
+	// Frontend Catch-all (WebUI proxy)
+	// ============================================
+	// Proxies all unmatched routes to the frontend dev server (e.g., Vite)
+	// Supports WebSocket upgrades for HMR (Hot Module Replacement)
+	router.NoRoute(proxy.ProxyWithWebSocket("frontend"))
 }

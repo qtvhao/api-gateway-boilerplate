@@ -17,21 +17,26 @@ import (
 
 // ProxyHandler handles reverse proxy operations
 type ProxyHandler struct {
-	config  *config.Config
-	logger  *zap.Logger
-	proxies map[string]*httputil.ReverseProxy
+	config          *config.Config
+	logger          *zap.Logger
+	proxies         map[string]*httputil.ReverseProxy
+	externalProxies map[string]*httputil.ReverseProxy
 }
 
 // NewProxyHandler creates a new proxy handler
 func NewProxyHandler(cfg *config.Config, logger *zap.Logger) *ProxyHandler {
 	handler := &ProxyHandler{
-		config:  cfg,
-		logger:  logger,
-		proxies: make(map[string]*httputil.ReverseProxy),
+		config:          cfg,
+		logger:          logger,
+		proxies:         make(map[string]*httputil.ReverseProxy),
+		externalProxies: make(map[string]*httputil.ReverseProxy),
 	}
 
 	// Initialize proxies for each backend service
 	handler.initProxies()
+
+	// Initialize proxies for external services
+	handler.initExternalProxies()
 
 	return handler
 }
@@ -72,6 +77,47 @@ func (p *ProxyHandler) initProxies() {
 		p.logger.Info("Initialized proxy for service",
 			zap.String("service", serviceName),
 			zap.String("url", endpoint.BaseURL),
+		)
+	}
+}
+
+// initExternalProxies initializes reverse proxies for external services
+func (p *ProxyHandler) initExternalProxies() {
+	for serviceName, endpoint := range p.config.ExternalServices {
+		if endpoint.BaseURL == "" {
+			continue
+		}
+
+		target, err := url.Parse(endpoint.BaseURL)
+		if err != nil {
+			p.logger.Error("Failed to parse external service URL",
+				zap.String("service", serviceName),
+				zap.String("url", endpoint.BaseURL),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		proxy := httputil.NewSingleHostReverseProxy(target)
+
+		// Customize the director to modify the request
+		originalDirector := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			originalDirector(req)
+			p.modifyRequest(req, target)
+		}
+
+		// Custom error handler
+		proxy.ErrorHandler = p.errorHandler
+
+		// Custom response modifier
+		proxy.ModifyResponse = p.modifyResponse
+
+		p.externalProxies[serviceName] = proxy
+		p.logger.Info("Initialized external proxy for service",
+			zap.String("service", serviceName),
+			zap.String("url", endpoint.BaseURL),
+			zap.Bool("websocket", endpoint.WebSocket),
 		)
 	}
 }
@@ -243,6 +289,163 @@ func (p *ProxyHandler) getServiceTimeout(serviceName string) time.Duration {
 		return svc.Timeout
 	}
 	return 30 * time.Second
+}
+
+// getExternalServiceTimeout returns the configured timeout for an external service
+func (p *ProxyHandler) getExternalServiceTimeout(serviceName string) time.Duration {
+	if svc, ok := p.config.ExternalServices[serviceName]; ok && svc.Timeout > 0 {
+		return svc.Timeout
+	}
+	return 30 * time.Second
+}
+
+// ProxyToExternalService returns a handler that proxies requests to an external service
+func (p *ProxyHandler) ProxyToExternalService(serviceName string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		proxy, exists := p.externalProxies[serviceName]
+		if !exists {
+			p.logger.Error("External proxy not found for service", zap.String("service", serviceName))
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   "Internal Server Error",
+				"message": "External service configuration not found",
+			})
+			return
+		}
+
+		// Log the proxy request
+		p.logger.Info("Proxying to external service",
+			zap.String("service", serviceName),
+			zap.String("method", c.Request.Method),
+			zap.String("path", c.Request.URL.Path),
+		)
+
+		// Extract the path suffix if using wildcard routes
+		if path := c.Param("path"); path != "" {
+			c.Request.URL.Path = path
+		}
+
+		// Set timeout for external request
+		timeout := p.getExternalServiceTimeout(serviceName)
+
+		// Add timeout handling
+		done := make(chan bool, 1)
+		go func() {
+			proxy.ServeHTTP(c.Writer, c.Request)
+			done <- true
+		}()
+
+		select {
+		case <-done:
+			// Request completed successfully
+		case <-time.After(timeout):
+			p.logger.Error("External service request timeout",
+				zap.String("service", serviceName),
+				zap.Duration("timeout", timeout),
+			)
+			if !c.Writer.Written() {
+				c.JSON(http.StatusGatewayTimeout, gin.H{
+					"error":   "Gateway Timeout",
+					"message": "External service did not respond in time",
+				})
+			}
+		}
+	}
+}
+
+// ProxyToExternalServiceWithPath returns a handler that proxies requests to an external service with path rewriting
+func (p *ProxyHandler) ProxyToExternalServiceWithPath(serviceName, targetPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		proxy, exists := p.externalProxies[serviceName]
+		if !exists {
+			p.logger.Error("External proxy not found for service", zap.String("service", serviceName))
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   "Internal Server Error",
+				"message": "External service configuration not found",
+			})
+			return
+		}
+
+		// Replace path parameters in target path
+		finalPath := p.replacePathParams(targetPath, c)
+
+		// Log the proxy request
+		p.logger.Info("Proxying to external service",
+			zap.String("service", serviceName),
+			zap.String("method", c.Request.Method),
+			zap.String("original_path", c.Request.URL.Path),
+			zap.String("target_path", finalPath),
+		)
+
+		// Set new path for backend
+		c.Request.URL.Path = finalPath
+
+		// Set timeout for external request
+		timeout := p.getExternalServiceTimeout(serviceName)
+
+		// Add timeout handling
+		done := make(chan bool, 1)
+		go func() {
+			proxy.ServeHTTP(c.Writer, c.Request)
+			done <- true
+		}()
+
+		select {
+		case <-done:
+			// Request completed successfully
+		case <-time.After(timeout):
+			p.logger.Error("External service request timeout",
+				zap.String("service", serviceName),
+				zap.String("path", finalPath),
+				zap.Duration("timeout", timeout),
+			)
+			if !c.Writer.Written() {
+				c.JSON(http.StatusGatewayTimeout, gin.H{
+					"error":   "Gateway Timeout",
+					"message": "External service did not respond in time",
+				})
+			}
+		}
+	}
+}
+
+// ProxyWithWebSocket returns a handler that proxies requests with WebSocket upgrade support
+// Use this for frontend dev servers (Vite HMR) or other WebSocket-enabled services
+func (p *ProxyHandler) ProxyWithWebSocket(serviceName string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		proxy, exists := p.externalProxies[serviceName]
+		if !exists {
+			p.logger.Error("External proxy not found for service", zap.String("service", serviceName))
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   "Internal Server Error",
+				"message": "External service configuration not found",
+			})
+			return
+		}
+
+		// Check if this is a WebSocket upgrade request
+		if isWebSocketUpgrade(c.Request) {
+			p.logger.Info("WebSocket upgrade request",
+				zap.String("service", serviceName),
+				zap.String("path", c.Request.URL.Path),
+			)
+		}
+
+		// Preserve the original path for frontend routing
+		p.logger.Debug("Proxying frontend request",
+			zap.String("service", serviceName),
+			zap.String("method", c.Request.Method),
+			zap.String("path", c.Request.URL.Path),
+		)
+
+		proxy.ServeHTTP(c.Writer, c.Request)
+	}
+}
+
+// isWebSocketUpgrade checks if the request is a WebSocket upgrade
+func isWebSocketUpgrade(req *http.Request) bool {
+	connection := req.Header.Get("Connection")
+	upgrade := req.Header.Get("Upgrade")
+	return strings.ToLower(connection) == "upgrade" && strings.ToLower(upgrade) == "websocket"
 }
 
 // NotFound handles 404 errors

@@ -42,6 +42,8 @@ cors:
     - "Accept"
     - "Authorization"
     - "X-Request-ID"
+    - "Upgrade"
+    - "Connection"
   expose_headers:
     - "Content-Length"
     - "X-Request-ID"
@@ -53,10 +55,26 @@ opa:
   policy_path: "./policies"
   bundle_url: ""
 
-# Backend services configuration
+# Backend services configuration (internal microservices)
 # Add your services here following the pattern:
 # services:
 #   service_name:
-#     base_url: "http://localhost:8081"
+#     base_url: "http://service-host:port"
 #     timeout: 30s
 services: {}
+
+# External services configuration (host machine services via host.docker.internal)
+# These services typically don't require authentication from the gateway
+external_services:
+  ollama:
+    base_url: "http://host.docker.internal:11434"
+    timeout: 600s  # LLM requests can take longer
+
+  docker_registry:
+    base_url: "http://host.docker.internal:5006"
+    timeout: 60s
+
+  frontend:
+    base_url: "http://host.docker.internal:3000"
+    timeout: 30s
+    websocket: true  # Enable WebSocket upgrade for HMR

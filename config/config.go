@@ -9,15 +9,16 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	Environment string                     `mapstructure:"environment"`
-	Port        int                        `mapstructure:"port"`
-	Server      ServerConfig               `mapstructure:"server"`
-	JWT         JWTConfig                  `mapstructure:"jwt"`
-	RateLimit   RateLimitConfig            `mapstructure:"rate_limit"`
-	Redis       RedisConfig                `mapstructure:"redis"`
-	CORS        CORSConfig                 `mapstructure:"cors"`
-	OPA         OPAConfig                  `mapstructure:"opa"`
-	Services    map[string]ServiceEndpoint `mapstructure:"services"`
+	Environment      string                             `mapstructure:"environment"`
+	Port             int                                `mapstructure:"port"`
+	Server           ServerConfig                       `mapstructure:"server"`
+	JWT              JWTConfig                          `mapstructure:"jwt"`
+	RateLimit        RateLimitConfig                    `mapstructure:"rate_limit"`
+	Redis            RedisConfig                        `mapstructure:"redis"`
+	CORS             CORSConfig                         `mapstructure:"cors"`
+	OPA              OPAConfig                          `mapstructure:"opa"`
+	Services         map[string]ServiceEndpoint         `mapstructure:"services"`
+	ExternalServices map[string]ExternalServiceEndpoint `mapstructure:"external_services"`
 }
 
 // ServerConfig holds server-specific configuration
@@ -74,6 +75,13 @@ type ServiceEndpoint struct {
 	Timeout time.Duration `mapstructure:"timeout"`
 }
 
+// ExternalServiceEndpoint represents an external service endpoint (e.g., host machine services)
+type ExternalServiceEndpoint struct {
+	BaseURL   string        `mapstructure:"base_url"`
+	Timeout   time.Duration `mapstructure:"timeout"`
+	WebSocket bool          `mapstructure:"websocket"` // Enable WebSocket upgrade support
+}
+
 // LoadConfig loads configuration from environment variables and config files
 func LoadConfig() (*Config, error) {
 	viper.SetConfigName("config")
@@ -101,9 +109,12 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
-	// Initialize services map if nil
+	// Initialize services maps if nil
 	if cfg.Services == nil {
 		cfg.Services = make(map[string]ServiceEndpoint)
+	}
+	if cfg.ExternalServices == nil {
+		cfg.ExternalServices = make(map[string]ExternalServiceEndpoint)
 	}
 
 	// Validate configuration
@@ -184,5 +195,11 @@ func validateConfig(cfg *Config) error {
 // GetService returns a service endpoint by name
 func (c *Config) GetService(name string) (ServiceEndpoint, bool) {
 	svc, ok := c.Services[name]
+	return svc, ok
+}
+
+// GetExternalService returns an external service endpoint by name
+func (c *Config) GetExternalService(name string) (ExternalServiceEndpoint, bool) {
+	svc, ok := c.ExternalServices[name]
 	return svc, ok
 }
