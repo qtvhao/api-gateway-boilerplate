@@ -9,15 +9,15 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	Environment string        `mapstructure:"environment"`
-	Port        int           `mapstructure:"port"`
-	Server      ServerConfig  `mapstructure:"server"`
-	JWT         JWTConfig     `mapstructure:"jwt"`
-	RateLimit   RateLimitConfig `mapstructure:"rate_limit"`
-	Redis       RedisConfig   `mapstructure:"redis"`
-	CORS        CORSConfig    `mapstructure:"cors"`
-	OPA         OPAConfig     `mapstructure:"opa"`
-	Services    ServicesConfig `mapstructure:"services"`
+	Environment string                     `mapstructure:"environment"`
+	Port        int                        `mapstructure:"port"`
+	Server      ServerConfig               `mapstructure:"server"`
+	JWT         JWTConfig                  `mapstructure:"jwt"`
+	RateLimit   RateLimitConfig            `mapstructure:"rate_limit"`
+	Redis       RedisConfig                `mapstructure:"redis"`
+	CORS        CORSConfig                 `mapstructure:"cors"`
+	OPA         OPAConfig                  `mapstructure:"opa"`
+	Services    map[string]ServiceEndpoint `mapstructure:"services"`
 }
 
 // ServerConfig holds server-specific configuration
@@ -29,10 +29,10 @@ type ServerConfig struct {
 
 // JWTConfig holds JWT authentication configuration
 type JWTConfig struct {
-	SecretKey      string        `mapstructure:"secret_key"`
-	TokenDuration  time.Duration `mapstructure:"token_duration"`
+	SecretKey       string        `mapstructure:"secret_key"`
+	TokenDuration   time.Duration `mapstructure:"token_duration"`
 	RefreshDuration time.Duration `mapstructure:"refresh_duration"`
-	Issuer         string        `mapstructure:"issuer"`
+	Issuer          string        `mapstructure:"issuer"`
 }
 
 // RateLimitConfig holds rate limiting configuration
@@ -68,16 +68,6 @@ type OPAConfig struct {
 	BundleURL  string `mapstructure:"bundle_url"`
 }
 
-// ServicesConfig holds backend service endpoints
-type ServicesConfig struct {
-	ProjectManagement     ServiceEndpoint `mapstructure:"project_management"`
-	GoalManagement        ServiceEndpoint `mapstructure:"goal_management"`
-	HRManagement          ServiceEndpoint `mapstructure:"hr_management"`
-	EngineeringAnalytics  ServiceEndpoint `mapstructure:"engineering_analytics"`
-	WorkforceWellbeing    ServiceEndpoint `mapstructure:"workforce_wellbeing"`
-	WebUI                 ServiceEndpoint `mapstructure:"web_ui"`
-}
-
 // ServiceEndpoint represents a backend service endpoint
 type ServiceEndpoint struct {
 	BaseURL string        `mapstructure:"base_url"`
@@ -111,6 +101,11 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
+	// Initialize services map if nil
+	if cfg.Services == nil {
+		cfg.Services = make(map[string]ServiceEndpoint)
+	}
+
 	// Validate configuration
 	if err := validateConfig(&cfg); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
@@ -122,7 +117,7 @@ func LoadConfig() (*Config, error) {
 func setDefaults() {
 	// General
 	viper.SetDefault("environment", "development")
-	viper.SetDefault("port", 8060)
+	viper.SetDefault("port", 8080)
 
 	// Server
 	viper.SetDefault("server.read_timeout", 15*time.Second)
@@ -133,7 +128,7 @@ func setDefaults() {
 	viper.SetDefault("jwt.secret_key", "change-me-in-production")
 	viper.SetDefault("jwt.token_duration", 15*time.Minute)
 	viper.SetDefault("jwt.refresh_duration", 7*24*time.Hour)
-	viper.SetDefault("jwt.issuer", "ugjb-api-gateway")
+	viper.SetDefault("jwt.issuer", "api-gateway")
 
 	// Rate Limiting
 	viper.SetDefault("rate_limit.enabled", true)
@@ -156,28 +151,9 @@ func setDefaults() {
 	viper.SetDefault("cors.max_age", 12*3600)
 
 	// OPA
-	viper.SetDefault("opa.enabled", true)
+	viper.SetDefault("opa.enabled", false)
 	viper.SetDefault("opa.policy_path", "./policies")
 	viper.SetDefault("opa.bundle_url", "")
-
-	// Backend Services
-	viper.SetDefault("services.project_management.base_url", "http://localhost:8061")
-	viper.SetDefault("services.project_management.timeout", 30*time.Second)
-
-	viper.SetDefault("services.goal_management.base_url", "http://localhost:8062")
-	viper.SetDefault("services.goal_management.timeout", 30*time.Second)
-
-	viper.SetDefault("services.hr_management.base_url", "http://localhost:8063")
-	viper.SetDefault("services.hr_management.timeout", 30*time.Second)
-
-	viper.SetDefault("services.engineering_analytics.base_url", "http://localhost:8064")
-	viper.SetDefault("services.engineering_analytics.timeout", 30*time.Second)
-
-	viper.SetDefault("services.workforce_wellbeing.base_url", "http://localhost:8065")
-	viper.SetDefault("services.workforce_wellbeing.timeout", 30*time.Second)
-
-	viper.SetDefault("services.web_ui.base_url", "http://host.docker.internal:3000")
-	viper.SetDefault("services.web_ui.timeout", 30*time.Second)
 }
 
 func validateConfig(cfg *Config) error {
@@ -203,4 +179,10 @@ func validateConfig(cfg *Config) error {
 	}
 
 	return nil
+}
+
+// GetService returns a service endpoint by name
+func (c *Config) GetService(name string) (ServiceEndpoint, bool) {
+	svc, ok := c.Services[name]
+	return svc, ok
 }

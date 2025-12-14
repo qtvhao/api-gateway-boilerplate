@@ -1,5 +1,6 @@
 # Authorization Policies
 # Open Policy Agent (OPA) authorization rules for API Gateway
+# Customize these rules based on your application requirements
 
 package authz
 
@@ -31,7 +32,6 @@ allow if {
 allow if {
     input.user.authenticated
     user_has_required_role
-    resource_accessible_to_user
 }
 
 # Check if user has required role for the resource
@@ -41,76 +41,12 @@ user_has_required_role if {
 }
 
 user_has_required_role if {
-    # System admins can access everything
-    "system_admin" in input.user.roles
-}
-
-user_has_required_role if {
-    # Developer role can access project and task management
-    "developer" in input.user.roles
-    startswith(input.path, "/api/v1/projects/")
-}
-
-user_has_required_role if {
-    # Manager role can access goals and analytics
-    "manager" in input.user.roles
-    path_allowed_for_manager
-}
-
-path_allowed_for_manager if {
-    startswith(input.path, "/api/v1/goals/")
-}
-
-path_allowed_for_manager if {
-    startswith(input.path, "/api/v1/analytics/")
-}
-
-path_allowed_for_manager if {
-    startswith(input.path, "/api/v1/hr/")
-}
-
-user_has_required_role if {
-    # HR role can access employee and wellbeing data
-    "hr" in input.user.roles
-    path_allowed_for_hr
-}
-
-path_allowed_for_hr if {
-    startswith(input.path, "/api/v1/hr/")
-}
-
-path_allowed_for_hr if {
-    startswith(input.path, "/api/v1/wellbeing/")
-}
-
-user_has_required_role if {
-    # Regular users can view their own data
+    # Regular authenticated users can access non-admin endpoints
     "user" in input.user.roles
-    input.method == "GET"
+    not startswith(input.path, "/api/v1/admin/")
 }
 
-# Check if resource is accessible to the user
-resource_accessible_to_user if {
-    # Admins can access all resources
-    "admin" in input.user.roles
-}
-
-resource_accessible_to_user if {
-    # System admins can access all resources
-    "system_admin" in input.user.roles
-}
-
-resource_accessible_to_user if {
-    # Users can access resources in their tenant
-    input.user.tenant_id == input.resource.tenant_id
-}
-
-resource_accessible_to_user if {
-    # Users can access their own resources
-    input.user.user_id == input.resource.owner_id
-}
-
-# Rate limit override for premium users
+# Rate limit override for premium users (example)
 rate_limit_override if {
     "premium" in input.user.tags
 }

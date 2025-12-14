@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/ugjb/api-gateway/config"
+	"github.com/api-gateway/config"
 	"go.uber.org/zap"
 )
 
@@ -38,21 +38,16 @@ func NewProxyHandler(cfg *config.Config, logger *zap.Logger) *ProxyHandler {
 
 // initProxies initializes reverse proxies for all backend services
 func (p *ProxyHandler) initProxies() {
-	services := map[string]string{
-		"project_management":    p.config.Services.ProjectManagement.BaseURL,
-		"goal_management":       p.config.Services.GoalManagement.BaseURL,
-		"hr_management":         p.config.Services.HRManagement.BaseURL,
-		"engineering_analytics": p.config.Services.EngineeringAnalytics.BaseURL,
-		"workforce_wellbeing":   p.config.Services.WorkforceWellbeing.BaseURL,
-		"web_ui":                p.config.Services.WebUI.BaseURL,
-	}
+	for serviceName, endpoint := range p.config.Services {
+		if endpoint.BaseURL == "" {
+			continue
+		}
 
-	for serviceName, baseURL := range services {
-		target, err := url.Parse(baseURL)
+		target, err := url.Parse(endpoint.BaseURL)
 		if err != nil {
 			p.logger.Error("Failed to parse service URL",
 				zap.String("service", serviceName),
-				zap.String("url", baseURL),
+				zap.String("url", endpoint.BaseURL),
 				zap.Error(err),
 			)
 			continue
@@ -74,6 +69,10 @@ func (p *ProxyHandler) initProxies() {
 		proxy.ModifyResponse = p.modifyResponse
 
 		p.proxies[serviceName] = proxy
+		p.logger.Info("Initialized proxy for service",
+			zap.String("service", serviceName),
+			zap.String("url", endpoint.BaseURL),
+		)
 	}
 }
 
@@ -93,13 +92,13 @@ func (p *ProxyHandler) modifyRequest(req *http.Request, target *url.URL) {
 	}
 
 	// Add gateway identifier
-	req.Header.Set("X-Gateway", "ugjb-api-gateway")
+	req.Header.Set("X-Gateway", "api-gateway")
 }
 
 // modifyResponse modifies the response from backend service
 func (p *ProxyHandler) modifyResponse(resp *http.Response) error {
 	// Add custom headers to response
-	resp.Header.Set("X-Gateway", "ugjb-api-gateway")
+	resp.Header.Set("X-Gateway", "api-gateway")
 
 	return nil
 }
@@ -120,7 +119,7 @@ func (p *ProxyHandler) errorHandler(w http.ResponseWriter, r *http.Request, err 
 }
 
 // ProxyToService returns a handler that proxies requests to a specific backend service
-func (p *ProxyHandler) ProxyToService(serviceName, targetPath string) gin.HandlerFunc {
+func (p *ProxyHandler) ProxyToService(serviceName string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		proxy, exists := p.proxies[serviceName]
 		if !exists {
@@ -137,19 +136,15 @@ func (p *ProxyHandler) ProxyToService(serviceName, targetPath string) gin.Handle
 			zap.String("service", serviceName),
 			zap.String("method", c.Request.Method),
 			zap.String("path", c.Request.URL.Path),
-			zap.String("target", targetPath),
 		)
 
-		// Replace path parameters in target path
-		finalPath := p.replacePathParams(targetPath, c)
-
-		// Store original path and set new path for backend
-		originalPath := c.Request.URL.Path
-		c.Request.URL.Path = finalPath
+		// Extract the path suffix if using wildcard routes (e.g., /users/*path)
+		if path := c.Param("path"); path != "" {
+			c.Request.URL.Path = path
+		}
 
 		// Set timeout for backend request
 		timeout := p.getServiceTimeout(serviceName)
-		c.Request = c.Request.WithContext(c.Request.Context())
 
 		// Add timeout handling
 		done := make(chan bool, 1)
@@ -164,7 +159,63 @@ func (p *ProxyHandler) ProxyToService(serviceName, targetPath string) gin.Handle
 		case <-time.After(timeout):
 			p.logger.Error("Backend request timeout",
 				zap.String("service", serviceName),
-				zap.String("path", originalPath),
+				zap.String("path", c.Request.URL.Path),
+				zap.Duration("timeout", timeout),
+			)
+			if !c.Writer.Written() {
+				c.JSON(http.StatusGatewayTimeout, gin.H{
+					"error":   "Gateway Timeout",
+					"message": "Backend service did not respond in time",
+				})
+			}
+		}
+	}
+}
+
+// ProxyToServiceWithPath returns a handler that proxies requests with path rewriting
+func (p *ProxyHandler) ProxyToServiceWithPath(serviceName, targetPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		proxy, exists := p.proxies[serviceName]
+		if !exists {
+			p.logger.Error("Proxy not found for service", zap.String("service", serviceName))
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   "Internal Server Error",
+				"message": "Service configuration not found",
+			})
+			return
+		}
+
+		// Replace path parameters in target path
+		finalPath := p.replacePathParams(targetPath, c)
+
+		// Log the proxy request
+		p.logger.Info("Proxying request",
+			zap.String("service", serviceName),
+			zap.String("method", c.Request.Method),
+			zap.String("original_path", c.Request.URL.Path),
+			zap.String("target_path", finalPath),
+		)
+
+		// Set new path for backend
+		c.Request.URL.Path = finalPath
+
+		// Set timeout for backend request
+		timeout := p.getServiceTimeout(serviceName)
+
+		// Add timeout handling
+		done := make(chan bool, 1)
+		go func() {
+			proxy.ServeHTTP(c.Writer, c.Request)
+			done <- true
+		}()
+
+		select {
+		case <-done:
+			// Request completed successfully
+		case <-time.After(timeout):
+			p.logger.Error("Backend request timeout",
+				zap.String("service", serviceName),
+				zap.String("path", finalPath),
 				zap.Duration("timeout", timeout),
 			)
 			if !c.Writer.Written() {
@@ -179,7 +230,6 @@ func (p *ProxyHandler) ProxyToService(serviceName, targetPath string) gin.Handle
 
 // replacePathParams replaces path parameters (e.g., :id) with actual values from context
 func (p *ProxyHandler) replacePathParams(path string, c *gin.Context) string {
-	// Get all path parameters
 	for _, param := range c.Params {
 		placeholder := ":" + param.Key
 		path = strings.ReplaceAll(path, placeholder, param.Value)
@@ -189,45 +239,10 @@ func (p *ProxyHandler) replacePathParams(path string, c *gin.Context) string {
 
 // getServiceTimeout returns the configured timeout for a service
 func (p *ProxyHandler) getServiceTimeout(serviceName string) time.Duration {
-	switch serviceName {
-	case "project_management":
-		return p.config.Services.ProjectManagement.Timeout
-	case "goal_management":
-		return p.config.Services.GoalManagement.Timeout
-	case "hr_management":
-		return p.config.Services.HRManagement.Timeout
-	case "engineering_analytics":
-		return p.config.Services.EngineeringAnalytics.Timeout
-	case "workforce_wellbeing":
-		return p.config.Services.WorkforceWellbeing.Timeout
-	case "web_ui":
-		return p.config.Services.WebUI.Timeout
-	default:
-		return 30 * time.Second
+	if svc, ok := p.config.Services[serviceName]; ok && svc.Timeout > 0 {
+		return svc.Timeout
 	}
-}
-
-// ProxyWebUI returns a handler that proxies all requests to the Web UI
-func (p *ProxyHandler) ProxyWebUI() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		proxy, exists := p.proxies["web_ui"]
-		if !exists {
-			p.logger.Error("Proxy not found for web_ui service")
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":   "Internal Server Error",
-				"message": "Web UI service configuration not found",
-			})
-			return
-		}
-
-		// Log the proxy request
-		p.logger.Debug("Proxying request to Web UI",
-			zap.String("method", c.Request.Method),
-			zap.String("path", c.Request.URL.Path),
-		)
-
-		proxy.ServeHTTP(c.Writer, c.Request)
-	}
+	return 30 * time.Second
 }
 
 // NotFound handles 404 errors

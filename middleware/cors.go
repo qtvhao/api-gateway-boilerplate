@@ -3,7 +3,7 @@ package middleware
 import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/ugjb/api-gateway/config"
+	"github.com/api-gateway/config"
 	"time"
 )
 

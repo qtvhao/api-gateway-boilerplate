@@ -106,5 +106,5 @@ func TestSystemStatus(t *testing.T) {
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
 	assert.Equal(t, "api-gateway", response["service"])
-	assert.NotNil(t, response["endpoints"])
+	assert.NotEmpty(t, response["environment"])
 }

@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/ugjb/api-gateway/config"
-	"github.com/ugjb/api-gateway/middleware"
-	"github.com/ugjb/api-gateway/routes"
+	"github.com/api-gateway/config"
+	"github.com/api-gateway/middleware"
+	"github.com/api-gateway/routes"
 	"go.uber.org/zap"
 )
 
