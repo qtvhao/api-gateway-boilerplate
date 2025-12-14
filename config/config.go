@@ -151,7 +151,7 @@ func setDefaults() {
 	viper.SetDefault("cors.max_age", 12*3600)
 
 	// OPA
-	viper.SetDefault("opa.enabled", false)
+	viper.SetDefault("opa.enabled", true)
 	viper.SetDefault("opa.policy_path", "./policies")
 	viper.SetDefault("opa.bundle_url", "")
 }

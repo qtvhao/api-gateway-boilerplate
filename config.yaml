@@ -49,7 +49,7 @@ cors:
   max_age: 43200 # 12 hours
 
 opa:
-  enabled: false
+  enabled: true
   policy_path: "./policies"
   bundle_url: ""
 
